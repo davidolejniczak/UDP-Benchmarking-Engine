@@ -1,3 +1,8 @@
 .DS_Store
 .vscode/
 Server/main
+__pycache__/*
+.matplotlib-cache/
+tail_latency.png
+ESP32/.env
+

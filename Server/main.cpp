@@ -42,7 +42,7 @@ int main() {
     std::thread serverThread([&udpServer, &serverRunning](){
         udpServer.runServer(serverRunning);
     }); 
-    printf("SERVER is up\n");
+    printf("SERVER will be up for %d seconds\n",timeLeft);
 
     UdpPacket benchmarkStart;
     benchmarkStart.hostPacketId = 0;
