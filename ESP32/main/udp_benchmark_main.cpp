@@ -1,5 +1,8 @@
 #include <errno.h>
+#include <cstddef>
 #include <stdint.h>
+#include <memory>
+#include <new>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -8,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_rom_sys.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -18,35 +22,118 @@
 #include "wifi_config.h"
 
 #define SERVER_PORT 8010
-#define SEND_INTERVAL_MS 1
 #define WIFI_MAXIMUM_RETRY 10
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
-#define UDP_PAYLOAD_SIZE 12
+#define UDP_HEADER_SIZE 12
+
+#if PAYLOAD_SIZE_BYTES < UDP_HEADER_SIZE
+#error "PAYLOAD_SIZE_BYTES must be at least 12"
+#endif
 
 static const char* TAG = "udp_benchmark";
 static EventGroupHandle_t wifi_event_group;
 static int wifi_retry_count;
 
-static void write_u32_le(uint8_t* output, uint32_t value)
-{
-    output[0] = (uint8_t)(value & 0xff);
-    output[1] = (uint8_t)((value >> 8) & 0xff);
-    output[2] = (uint8_t)((value >> 16) & 0xff);
-    output[3] = (uint8_t)((value >> 24) & 0xff);
-}
+class EspUdpPacketBuilder {
+public:
+    static constexpr size_t HEADER_SIZE = UDP_HEADER_SIZE;
 
-static void write_u64_le(uint8_t* output, uint64_t value)
+    explicit EspUdpPacketBuilder(size_t payload_size)
+        : payload_size_(payload_size),
+          buffer_(new (std::nothrow) uint8_t[payload_size])
+    {
+        if (buffer_) {
+            reset();
+        }
+    }
+
+    bool valid() const
+    {
+        return buffer_ != nullptr;
+    }
+
+    EspUdpPacketBuilder& reset()
+    {
+        if (buffer_) {
+            memset(buffer_.get(), 0, payload_size_);
+        }
+        return *this;
+    }
+
+    EspUdpPacketBuilder& with_packet_id(uint32_t packet_id)
+    {
+        packet_id_ = packet_id;
+        write_u32_le(buffer_.get(), packet_id);
+        return *this;
+    }
+
+    EspUdpPacketBuilder& with_timestamp_ns(uint64_t timestamp_ns)
+    {
+        write_u64_le(buffer_.get() + sizeof(uint32_t), timestamp_ns);
+        return *this;
+    }
+
+    EspUdpPacketBuilder& with_deterministic_payload()
+    {
+        for (size_t i = HEADER_SIZE; i < payload_size_; i++) {
+            buffer_[i] = static_cast<uint8_t>(packet_id_ + i);
+        }
+        return *this;
+    }
+
+    const uint8_t* data() const
+    {
+        return buffer_.get();
+    }
+
+    size_t size() const
+    {
+        return payload_size_;
+    }
+
+private:
+    static void write_u32_le(uint8_t* output, uint32_t value)
+    {
+        output[0] = static_cast<uint8_t>(value & 0xff);
+        output[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+        output[2] = static_cast<uint8_t>((value >> 16) & 0xff);
+        output[3] = static_cast<uint8_t>((value >> 24) & 0xff);
+    }
+
+    static void write_u64_le(uint8_t* output, uint64_t value)
+    {
+        output[0] = static_cast<uint8_t>(value & 0xff);
+        output[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+        output[2] = static_cast<uint8_t>((value >> 16) & 0xff);
+        output[3] = static_cast<uint8_t>((value >> 24) & 0xff);
+        output[4] = static_cast<uint8_t>((value >> 32) & 0xff);
+        output[5] = static_cast<uint8_t>((value >> 40) & 0xff);
+        output[6] = static_cast<uint8_t>((value >> 48) & 0xff);
+        output[7] = static_cast<uint8_t>((value >> 56) & 0xff);
+    }
+
+    size_t payload_size_;
+    uint32_t packet_id_ = 0;
+    std::unique_ptr<uint8_t[]> buffer_;
+};
+
+static void delay_until_us(uint64_t target_time_us)
 {
-    output[0] = (uint8_t)(value & 0xff);
-    output[1] = (uint8_t)((value >> 8) & 0xff);
-    output[2] = (uint8_t)((value >> 16) & 0xff);
-    output[3] = (uint8_t)((value >> 24) & 0xff);
-    output[4] = (uint8_t)((value >> 32) & 0xff);
-    output[5] = (uint8_t)((value >> 40) & 0xff);
-    output[6] = (uint8_t)((value >> 48) & 0xff);
-    output[7] = (uint8_t)((value >> 56) & 0xff);
+    while (true) {
+        uint64_t now_us = (uint64_t)esp_timer_get_time();
+        if (now_us >= target_time_us) {
+            return;
+        }
+
+        uint64_t remaining_us = target_time_us - now_us;
+        if (remaining_us >= 2000) {
+            vTaskDelay(pdMS_TO_TICKS((uint32_t)(remaining_us / 1000)));
+        } else {
+            esp_rom_delay_us((uint32_t)remaining_us);
+        }
+    }
 }
 
 static void wifi_event_handler(
@@ -130,8 +217,14 @@ static esp_err_t wifi_init_sta(void)
 
 static void udp_sender_task(void* arg)
 {
-    uint8_t payload[UDP_PAYLOAD_SIZE];
+    EspUdpPacketBuilder packet_builder(PAYLOAD_SIZE_BYTES);
     uint32_t packet_id = 1;
+
+    if (!packet_builder.valid()) {
+        ESP_LOGE(TAG, "failed to allocate %u byte payload", PAYLOAD_SIZE_BYTES);
+        vTaskDelete(NULL);
+        return;
+    }
 
     struct sockaddr_in destination = {0};
     destination.sin_family = AF_INET;
@@ -151,19 +244,32 @@ static void udp_sender_task(void* arg)
     }
 
     ESP_LOGI(TAG, "sending UDP packets to %s:%d", SERVER_IP, SERVER_PORT);
+    ESP_LOGI(
+        TAG,
+        "payload=%u bytes interval=%llu us duration=%llu sec",
+        PAYLOAD_SIZE_BYTES,
+        SEND_INTERVAL_US,
+        TEST_DURATION_SEC);
 
-    while (true) {
+    uint64_t start_time_us = (uint64_t)esp_timer_get_time();
+    uint64_t end_time_us = start_time_us + (TEST_DURATION_SEC * 1000000ULL);
+    uint64_t next_send_time_us = start_time_us;
+
+    while ((uint64_t)esp_timer_get_time() < end_time_us) {
         uint64_t timestamp_ns = (uint64_t)esp_timer_get_time() * 1000ULL;
 
-        write_u32_le(payload, packet_id);
-        write_u64_le(payload + sizeof(uint32_t), timestamp_ns);
+        packet_builder
+            .reset()
+            .with_packet_id(packet_id)
+            .with_timestamp_ns(timestamp_ns)
+            .with_deterministic_payload();
 
         int bytes_sent = sendto(
             socket_fd,
-            payload,
-            sizeof(payload),
+            packet_builder.data(),
+            packet_builder.size(),
             0,
-            (struct sockaddr*)&destination,
+            reinterpret_cast<struct sockaddr*>(&destination),
             sizeof(destination));
 
         if (bytes_sent < 0) {
@@ -171,11 +277,18 @@ static void udp_sender_task(void* arg)
         }
 
         packet_id++;
-        vTaskDelay(pdMS_TO_TICKS(SEND_INTERVAL_MS));
+        if (SEND_INTERVAL_US > 0) {
+            next_send_time_us += SEND_INTERVAL_US;
+            delay_until_us(next_send_time_us);
+        }
     }
+
+    ESP_LOGI(TAG, "benchmark complete, sent %lu packets", (unsigned long)(packet_id - 1));
+    close(socket_fd);
+    vTaskDelete(NULL);
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     esp_err_t nvs_result = nvs_flash_init();
     if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES ||

@@ -10,7 +10,7 @@
 #include <arpa/inet.h> 
 #include <unistd.h>
 
-#define MAXBUFF 1024
+#define MAXBUFF 2048
 #define PORT 8010
 
 class server {

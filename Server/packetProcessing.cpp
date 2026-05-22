@@ -29,13 +29,15 @@ public:
     uint64_t hostReceivedTimestampNS;
     uint32_t ESPpacketId; 
     uint64_t ESPsentTimestampNS; 
+    bool parseValid;
 
     UdpPacket(): 
         hostPacketId(nextHostPacketId()),
         packetSize(0),
         hostReceivedTimestampNS(nowNS()),
         ESPpacketId(0),
-        ESPsentTimestampNS(0) {}
+        ESPsentTimestampNS(0),
+        parseValid(false) {}
 
     UdpPacket(const char* buffer, size_t bytesReceived): 
         rawPayload(buffer, buffer + bytesReceived),
@@ -43,7 +45,8 @@ public:
         packetSize(bytesReceived),
         hostReceivedTimestampNS(nowNS()),
         ESPpacketId(0), 
-        ESPsentTimestampNS(0) {}
+        ESPsentTimestampNS(0),
+        parseValid(false) {}
 
     static UdpPacket capture(const char* buffer, size_t bytesReceived) {
         return UdpPacket(buffer, bytesReceived);
@@ -76,7 +79,7 @@ public:
         }
 
         loggingBuffer.reserve(1024 * 1024);
-        const std::string header = "hostPacketId,hostReceivedTimestampNS,ESPpacketId,ESPsentTimestampNS\n";
+        const std::string header = "hostPacketId,hostReceivedTimestampNS,packetSize,ESPpacketId,ESPsentTimestampNS,parseValid\n";
         loggingBuffer.insert(loggingBuffer.end(), header.begin(), header.end());
         return 0; 
     }
@@ -134,8 +137,10 @@ private:
         const std::string row =
             std::to_string(packet.hostPacketId) + "," +
             std::to_string(packet.hostReceivedTimestampNS) + "," +
+            std::to_string(packet.packetSize) + "," +
             std::to_string(packet.ESPpacketId) + "," +
-            std::to_string(packet.ESPsentTimestampNS) + "\n";
+            std::to_string(packet.ESPsentTimestampNS) + "," +
+            std::to_string(packet.parseValid ? 1 : 0) + "\n";
 
         loggingBuffer.insert(loggingBuffer.end(), row.begin(), row.end());
     }
@@ -180,6 +185,7 @@ public:
         if (packet.rawPayload.size() < UDP_PAYLOAD_SIZE) {
             packet.ESPpacketId = 0;
             packet.ESPsentTimestampNS = 0; 
+            packet.parseValid = false;
             return true;
         }
         // little endian 
@@ -199,6 +205,7 @@ public:
             (static_cast<uint64_t>(packet.rawPayload[10]) << 48) |
             (static_cast<uint64_t>(packet.rawPayload[11]) << 56);
 
+        packet.parseValid = true;
         return true;
     }
 
