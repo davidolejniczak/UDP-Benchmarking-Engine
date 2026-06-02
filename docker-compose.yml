@@ -1,0 +1,62 @@
+services:
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command: redis-server --bind 127.0.0.1 --port 6379
+
+  server:
+    build: .
+    network_mode: host
+    depends_on:
+      - redis
+    command:
+      - ./marketdata_server
+      - --redis-host
+      - 127.0.0.1
+      - --duration-sec
+      - "${SERVER_DURATION:-8}"
+
+  exchange0:
+    build: .
+    network_mode: host
+    depends_on:
+      - server
+    command: sh -c "sleep 1 && ./marketdata_client --exchange-id 0 --group 239.10.0.1 --port 9001 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0"
+
+  exchange1:
+    build: .
+    network_mode: host
+    depends_on:
+      - server
+    command: sh -c "sleep 1 && ./marketdata_client --exchange-id 1 --group 239.10.0.2 --port 9002 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0"
+
+  exchange2:
+    build: .
+    network_mode: host
+    depends_on:
+      - server
+    command: sh -c "sleep 1 && ./marketdata_client --exchange-id 2 --group 239.10.0.3 --port 9003 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0"
+
+  exchange3:
+    build: .
+    network_mode: host
+    depends_on:
+      - server
+    command: sh -c "sleep 1 && ./marketdata_client --exchange-id 3 --group 239.10.0.4 --port 9004 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0"
+
+  benchmark:
+    build: .
+    network_mode: host
+    depends_on:
+      - redis
+    command: >
+      sh -c "
+      ./marketdata_server --redis-host 127.0.0.1 --duration-sec ${SERVER_DURATION:-8} &
+      server_pid=$$!;
+      sleep 1;
+      ./marketdata_client --exchange-id 0 --group 239.10.0.1 --port 9001 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0 &
+      ./marketdata_client --exchange-id 1 --group 239.10.0.2 --port 9002 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0 &
+      ./marketdata_client --exchange-id 2 --group 239.10.0.3 --port 9003 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0 &
+      ./marketdata_client --exchange-id 3 --group 239.10.0.4 --port 9004 --duration-sec ${CLIENT_DURATION:-5} --payload-size ${PAYLOAD_SIZE:-64} --rate 0 &
+      wait $$server_pid
+      "

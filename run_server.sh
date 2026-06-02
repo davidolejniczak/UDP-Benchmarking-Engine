@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-./build/marketdata_server "$@"
+docker compose up server
