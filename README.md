@@ -1,6 +1,6 @@
 # MarketData Server
 
-C++20 UDP multicast ingest server for simulated market-data feeds. Four exchange clients publish multicast packets; the server receives each stream, pushes packet records through lock-free SPSC rings, and writes batches to Redis Streams.
+C++20 Linux UDP multicast ingest server for simulated market-data feeds, packaged with Docker. Four exchange clients publish multicast packets; the server receives each stream, pushes packet records through lock-free SPSC rings, and writes batches to Redis Streams.
 
 ## Architecture
 
@@ -25,8 +25,7 @@ uint64_t sequence_id
 uint64_t send_timestamp_ns
 ```
 
-## Build and Run
-
+## Run In Docker
 ```bash
 ./build.sh
 ./run_redis.sh
@@ -38,4 +37,12 @@ Example server output:
 ```text
 received_pps=123456 redis_write_pps=120000
 summary total_received=1234567 total_written_to_redis=1200000 avg_received_pps=... avg_redis_write_pps=... dropped_packets=...
+```
+
+## Tests
+
+Tests run inside the Docker build to ensure CMAKE worked:
+
+```bash
+docker compose build
 ```
